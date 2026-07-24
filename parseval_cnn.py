@@ -1,18 +1,25 @@
 """Parseval (orthogonal, 1-Lipschitz) CNN denoisers.
 
-This module keeps only the three architectures that matter. The full set of
-experimental variants (ParsevalCNN2 .. ParsevalCNN27) lives in
+This module keeps only the architectures that matter, under descriptive names.
+The full set of experimental variants (ParsevalCNN2 .. ParsevalCNN27) lives in
 ``parseval_cnn_experiments.py``.
 
-The three kept here form a clean ablation:
+Two independent ideas are combined here:
 
-    ParsevalCNN    -- the original baseline: a plain stack of BCOP orthogonal
-                      convolutions with linear-spline activations.
-    ParsevalCNN13  -- "symmetry only": same stacked design, but each layer is a
-                      symmetric orthogonal convolution (SymBCOP).
-    ParsevalCNN22  -- "symmetric mirror": the nested "onion" architecture where
-                      each orthogonal layer's transpose is reused on the way out
-                      (SymMirrorBCOP).
+    * "symmetric filters" -- the orthogonal convolution is built to be
+      symmetric (SymBCOP, and the U0/U1 construction inside SymMirrorBCOP).
+    * "mirror" -- a nested "onion" architecture in which the second half of the
+      network reuses the mirrored (flipped) filters of the first half
+      (MirrorBCOP / SymMirrorBCOP).
+
+The four kept models form a clean 2x2 ablation over those two ideas:
+
+    class name                    symmetric?  mirror?   was      conv block
+    --------------------------    ----------  -------   ------   -------------
+    BaselineParsevalCNN               no        no      CNN      BCOP
+    SymmetricParsevalCNN              yes        no      CNN13    SymBCOP
+    MirrorParsevalCNN                 no        yes      CNN20    MirrorBCOP
+    SymmetricMirrorParsevalCNN        yes        yes     CNN22    SymMirrorBCOP
 """
 
 import torch
@@ -21,12 +28,23 @@ import torch.nn as nn
 from linearspline import LinearSpline
 from layers.BCOP.bcop import BCOP
 from layers.BCOP.symbcop import SymBCOP
-from layers.BCOP.mirror_bcop import SymMirrorBCOP
+from layers.BCOP.mirror_bcop import MirrorBCOP, SymMirrorBCOP
 from layers.UnitaryMatrices.unitary import UnitaryMatrix, UnitaryTransposed
 
 
-class ParsevalCNN(nn.Module):
-    """Original baseline: a plain stack of BCOP orthogonal convolutions."""
+class NestedSequential(nn.Sequential):
+    """Sequential container that also exposes the mirror-network half passes."""
+    def forward_half(self, x, apply_first=True):
+        y = self[0](x) if apply_first else x
+        y = self[1].forward_half(y, apply_first=apply_first)
+        return y
+
+    def forward_middle(self, x):
+        return self[1].forward_middle(x)
+
+
+class BaselineParsevalCNN(nn.Module):
+    """Baseline: a plain stack of BCOP orthogonal convolutions (was ParsevalCNN)."""
     def __init__(self, network_parameters, activation_params):
 
         super().__init__()
@@ -57,8 +75,9 @@ class ParsevalCNN(nn.Module):
         return self.network(x)
 
 
-class ParsevalCNN13(nn.Module):
-    """Symmetry only: a stacked architecture of symmetric orthogonal convs."""
+class SymmetricParsevalCNN(nn.Module):
+    """Symmetry only: a stacked architecture of symmetric orthogonal convs
+    (SymBCOP). Was ParsevalCNN13."""
     def __init__(self, network_parameters, activation_params):
 
         super().__init__()
@@ -89,18 +108,52 @@ class ParsevalCNN13(nn.Module):
         return self.network(x)
 
 
-class NestedSequential(nn.Sequential):
-    def forward_half(self, x, apply_first=True):
-        y = self[0](x) if apply_first else x
-        y = self[1].forward_half(y, apply_first=apply_first)
-        return y
+class MirrorParsevalCNN(nn.Module):
+    """Mirror only: the nested ("onion") architecture whose second half reuses
+    the mirrored filters of the first half, without symmetric filters
+    (MirrorBCOP). Was ParsevalCNN20."""
+    def __init__(self, network_parameters, activation_params):
+        super().__init__()
 
-    def forward_middle(self, x):
-        return self[1].forward_middle(x)
+        depth = network_parameters['depth']
+        nb_channels = network_parameters['nb_channels']
+        kernel_size = network_parameters['kernel_size']
+        bias = network_parameters['bias']
+
+        spline_size = activation_params['spline_size']
+        spline_range = activation_params['spline_range']
+
+        unitary = UnitaryMatrix(1, out_channels=nb_channels)
+        unitary_transposed = UnitaryTransposed(unitary)
+        layers = self._create_nested_structure(depth, nb_channels, kernel_size, bias, spline_size, spline_range)
+
+        self.network = NestedSequential(
+            unitary,
+            layers,
+            unitary_transposed
+        )
+
+    def _create_nested_structure(self, depth, nb_channels, kernel_size, bias, spline_size, spline_range):
+        if depth == 0:
+            return LinearSpline(nb_channels, spline_size, -spline_range, spline_range, 'identity', slope_min=-1, slope_max=1)
+        else:
+            return NestedSequential(
+                LinearSpline(nb_channels, spline_size, -spline_range, spline_range, 'identity', slope_min=-1, slope_max=1),
+                MirrorBCOP(
+                    nb_channels, nb_channels, kernel_size, bias=bias,
+                    middle_network=self._create_nested_structure(depth-1, nb_channels, kernel_size, bias, spline_size, spline_range)
+                ),
+                LinearSpline(nb_channels, spline_size, -spline_range, spline_range, 'identity', slope_min=-1, slope_max=1)
+            )
+
+    def forward(self, x):
+        """Forward pass through the network"""
+        return self.network(x)
 
 
-class ParsevalCNN22(nn.Module):
-    """Symmetric mirror: nested ("onion") Parseval CNN using SymMirrorBCOP."""
+class SymmetricMirrorParsevalCNN(nn.Module):
+    """Symmetric mirror: the nested ("onion") architecture using symmetric
+    mirrored filters (SymMirrorBCOP). Was ParsevalCNN22."""
     def __init__(self, network_parameters, activation_params):
         super().__init__()
 
