@@ -1,0 +1,33 @@
+{
+    "_comment": "Template for an experiment config. Copy this file, rename it (the file name becomes the row identity in the table), remove the leading underscore, and edit the values. Files whose name starts with '_' are ignored by experiments.py. One config == one model trained at each of its 'sigmas'. Each model may use different hyper-parameters, so they need NOT match across files. NOTE on 'depth': for the stacked models (baseline, symmetric) depth is the number of convolution layers; for the nested models (mirror, symmetric_mirror) depth is the recursion depth (each level adds two convolutions), so equal 'depth' values are not directly comparable across the two families.",
+
+    "label": "Human-readable name shown in the table",
+    "sigmas": [5, 15, 25],
+
+    "net_params": {
+        "model": "one of: baseline | symmetric | mirror | symmetric_mirror",
+        "depth": 16,
+        "nb_channels": 64,
+        "kernel_size": 3,
+        "bias": false
+    },
+    "activation_params": {
+        "lmbda": 1e-06,
+        "spline_range": 0.1,
+        "spline_size": 51,
+        "entro": 1e-1
+    },
+    "optimizer": {
+        "lr_weights": 1e-05,
+        "lr_spline_coeffs": 1e-06,
+        "lr_spline_scaling_coeffs": 1e-05,
+        "lr_directions": 1e-03
+    },
+    "training_options": {
+        "batch_size": 128,
+        "epochs": 10,
+        "num_workers": 1,
+        "train_data_file": "/home/borna/Documents/BSD500/train.h5",
+        "val_data_file": "/home/borna/Documents/BSD500/test.h5"
+    }
+}

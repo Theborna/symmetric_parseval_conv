@@ -1,26 +1,38 @@
-"""Train every core model at several noise levels and tabulate the results.
+"""Train every model config in a folder at several noise levels, then tabulate.
 
-This is the experiment driver for the paper's denoising table. It trains each
-model in ``parseval_cnn.MODELS`` at each requested noise level ``sigma`` (default
-5, 15, 25), records the validation PSNR/SSIM, and writes:
+This is the experiment driver for the paper's denoising table. Instead of one
+model with CLI overrides, it reads a *folder of JSON configs* (one per model);
+each config uses the same schema as ``config.json`` and additionally names the
+model (``net_params.model``) and the noise levels to sweep (``sigmas``). Because
+each config is independent, models may use different hyper-parameters (width,
+depth, learning rates, ...).
 
-    <output-dir>/results.json   raw metrics for every (model, sigma) run
+For every config, and every sigma it requests, a run trains with the existing
+``Trainer`` (training/eval identical to ``train.py``) and records the validation
+PSNR/SSIM. The driver writes:
+
+    <output-dir>/results.json   raw metrics for every (config, sigma) run
     <output-dir>/results.md     a Markdown table (quick to eyeball)
     <output-dir>/results.tex    a LaTeX (booktabs) table for the paper
 
-Each run reuses the existing ``Trainer`` (so training/eval is identical to
-``train.py``); only the model and sigma vary between runs. Results are saved
-incrementally, so a crashed or interrupted sweep can be resumed with ``--resume``
-and the table can always be regenerated from ``results.json`` with
+Results are saved incrementally, so an interrupted sweep can be resumed with
+``--resume`` and the table can be regenerated from ``results.json`` with
 ``--tabulate-only``.
+
+Config folder
+-------------
+See ``experiment_configs/`` for examples and ``experiment_configs/_template.json``
+for a documented template. Each ``*.json`` in the folder is one model; the file
+name is that model's identity (its row in the table). Files whose name starts
+with ``_`` are ignored, so ``_template.json`` is never run.
 
 Examples
 --------
-    # Full sweep (4 models x 3 sigmas) on the GPU
+    # Full sweep over experiment_configs/ on the GPU
     python experiments.py -d cuda
 
-    # Quick smoke test: one model, few epochs
-    python experiments.py -d cuda --models symmetric_mirror --epochs 1
+    # A subset of configs, few epochs, as a smoke test
+    python experiments.py -d cuda --configs symmetric_mirror --epochs 1
 
     # Rebuild the tables from an existing results.json without retraining
     python experiments.py --tabulate-only -o exps/paper
@@ -32,12 +44,12 @@ import json
 import os
 import random
 import time
+from glob import glob
 
 import numpy as np
 import torch
 
 from trainer import Trainer
-from parseval_cnn import MODELS, MODEL_LABELS
 
 
 def set_seed(seed=0):
@@ -51,57 +63,52 @@ def set_seed(seed=0):
     torch.backends.cudnn.benchmark = False
 
 
-def _coerce(value):
-    """Turn a CLI string into an int/float/bool/None/str via JSON, else keep str."""
-    try:
-        return json.loads(value)
-    except (ValueError, TypeError):
-        return value
+# --------------------------------------------------------------------------- #
+# Config loading
+# --------------------------------------------------------------------------- #
 
+def load_configs(config_dir, only=None):
+    """Load ``*.json`` configs from a folder.
 
-def _set_dotted(config, dotted_key, value):
-    """Set config['a']['b'] = value from a dotted key 'a.b' (creating dicts)."""
-    keys = dotted_key.split('.')
-    node = config
-    for k in keys[:-1]:
-        node = node.setdefault(k, {})
-    node[keys[-1]] = value
-
-
-def apply_overrides(config, args):
-    """Apply hyper-parameter overrides (friendly flags + generic --set) in place.
-
-    Friendly flags win over the base config; --set entries win over everything,
-    so you can always reach a config key that has no dedicated flag.
+    Returns a list of ``(name, config)`` in sorted file-name order. Files whose
+    name starts with ``_`` (e.g. ``_template.json``) are skipped. ``only`` is an
+    optional list of names (file stems) to keep.
     """
-    friendly = {
-        'net_params.depth': args.depth,
-        'net_params.nb_channels': args.width,
-        'net_params.kernel_size': args.kernel_size,
-        'training_options.batch_size': args.batch_size,
-        'training_options.epochs': args.epochs,
-    }
-    for dotted, val in friendly.items():
-        if val is not None:
-            _set_dotted(config, dotted, val)
-
-    for item in (args.set or []):
-        if '=' not in item:
-            raise ValueError(f"--set expects key=value, got '{item}'")
-        key, val = item.split('=', 1)
-        _set_dotted(config, key.strip(), _coerce(val))
-
-    return config
+    configs = []
+    for path in sorted(glob(os.path.join(config_dir, '*.json'))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        if name.startswith('_'):
+            continue
+        if only is not None and name not in only:
+            continue
+        with open(path) as f:
+            configs.append((name, json.load(f)))
+    return configs
 
 
-def run_one(base_config, model_name, sigma, device, output_dir):
-    """Train a single (model, sigma) and return its metrics dict."""
+def resolve_sigmas(config, default_sigmas):
+    """Noise levels for a config: its ``sigmas`` list, else ``sigma``, else CLI."""
+    if 'sigmas' in config:
+        return list(config['sigmas'])
+    if 'sigma' in config:
+        return [config['sigma']]
+    return list(default_sigmas)
+
+
+def run_one(base_config, name, sigma, device, output_dir, epochs=None):
+    """Train a single (config, sigma) and return its metrics dict."""
     config = copy.deepcopy(base_config)
-    config['net_params']['model'] = model_name
+    # Strip driver-only keys the Trainer does not expect.
+    config.pop('sigmas', None)
+    config.pop('label', None)
+    config.pop('_comment', None)
+
     config['sigma'] = sigma
+    if epochs is not None:
+        config['training_options']['epochs'] = epochs
 
     # Give each run its own experiment folder so checkpoints/logs never collide.
-    config['exp_name'] = f"{model_name}_sigma_{sigma}"
+    config['exp_name'] = f"{name}_sigma_{sigma}"
     config['log_dir'] = os.path.join(output_dir, 'runs')
 
     set_seed(0)
@@ -110,11 +117,11 @@ def run_one(base_config, model_name, sigma, device, output_dir):
     metrics = trainer.train()
     metrics['minutes'] = round((time.time() - start) / 60.0, 2)
     # Provenance: record the hyper-parameters this cell was trained with.
-    metrics['epochs'] = config['training_options']['epochs']
+    metrics['model'] = config['net_params'].get('model')
     metrics['depth'] = config['net_params']['depth']
     metrics['width'] = config['net_params']['nb_channels']
     metrics['kernel_size'] = config['net_params']['kernel_size']
-    metrics['batch_size'] = config['training_options']['batch_size']
+    metrics['epochs'] = config['training_options']['epochs']
     return metrics
 
 
@@ -122,46 +129,58 @@ def run_one(base_config, model_name, sigma, device, output_dir):
 # Tabulation
 # --------------------------------------------------------------------------- #
 
-def _cell(results, model, sigma, metric):
+def _all_sigmas(results, names):
+    """Sorted union of every sigma present across the given configs."""
+    sigmas = set()
+    for name in names:
+        sigmas.update(int(s) for s in results.get(name, {}).get('runs', {}))
+    return sorted(sigmas)
+
+
+def _cell(results, name, sigma, metric):
     """Return (psnr, ssim) for a run, or (None, None) if it is missing."""
-    entry = results.get(model, {}).get(str(sigma))
+    entry = results.get(name, {}).get('runs', {}).get(str(sigma))
     if entry is None:
         return None, None
     return entry.get(f'{metric}_psnr'), entry.get(f'{metric}_ssim')
 
 
-def _best_psnr_per_sigma(results, models, sigmas, metric):
-    """Index of the winning model (highest PSNR) for each sigma, for bolding."""
+def _label(results, name):
+    return results.get(name, {}).get('label') or name
+
+
+def _best_psnr_per_sigma(results, names, sigmas, metric):
+    """Name of the winning model (highest PSNR) for each sigma, for bolding."""
     best = {}
     for sigma in sigmas:
-        vals = [(_cell(results, m, sigma, metric)[0], m) for m in models]
-        vals = [(v, m) for v, m in vals if v is not None]
+        vals = [(_cell(results, n, sigma, metric)[0], n) for n in names]
+        vals = [(v, n) for v, n in vals if v is not None]
         best[sigma] = max(vals)[1] if vals else None
     return best
 
 
-def make_markdown(results, models, sigmas, metric):
+def make_markdown(results, names, sigmas, metric):
     header = ['Model'] + [f'sigma={s} (PSNR / SSIM)' for s in sigmas]
     lines = ['| ' + ' | '.join(header) + ' |',
              '|' + '|'.join(['---'] * len(header)) + '|']
-    winners = _best_psnr_per_sigma(results, models, sigmas, metric)
-    for m in models:
-        row = [MODEL_LABELS.get(m, m)]
+    winners = _best_psnr_per_sigma(results, names, sigmas, metric)
+    for name in names:
+        row = [_label(results, name)]
         for s in sigmas:
-            psnr, ssim = _cell(results, m, s, metric)
+            psnr, ssim = _cell(results, name, s, metric)
             if psnr is None:
                 row.append('--')
             else:
                 cell = f'{psnr:.2f} / {ssim:.4f}'
-                if winners[s] == m:
+                if winners[s] == name:
                     cell = f'**{cell}**'
                 row.append(cell)
         lines.append('| ' + ' | '.join(row) + ' |')
     return '\n'.join(lines) + '\n'
 
 
-def make_latex(results, models, sigmas, metric):
-    winners = _best_psnr_per_sigma(results, models, sigmas, metric)
+def make_latex(results, names, sigmas, metric):
+    winners = _best_psnr_per_sigma(results, names, sigmas, metric)
     col_spec = 'l' + ' cc' * len(sigmas)
     lines = [
         '\\begin{table}[t]',
@@ -185,16 +204,16 @@ def make_latex(results, models, sigmas, metric):
     lines.append('Model & ' + ' & '.join(['PSNR & SSIM'] * len(sigmas)) + ' \\\\')
     lines.append('\\midrule')
 
-    for m in models:
-        row = [MODEL_LABELS.get(m, m)]
+    for name in names:
+        row = [_label(results, name)]
         for s in sigmas:
-            psnr, ssim = _cell(results, m, s, metric)
+            psnr, ssim = _cell(results, name, s, metric)
             if psnr is None:
                 row += ['--', '--']
             else:
                 p = f'{psnr:.2f}'
                 q = f'{ssim:.4f}'
-                if winners[s] == m:
+                if winners[s] == name:
                     p = f'\\textbf{{{p}}}'
                 row += [p, q]
         lines.append(' & '.join(row) + ' \\\\')
@@ -203,9 +222,10 @@ def make_latex(results, models, sigmas, metric):
     return '\n'.join(lines)
 
 
-def write_tables(results, models, sigmas, metric, output_dir):
-    md = make_markdown(results, models, sigmas, metric)
-    tex = make_latex(results, models, sigmas, metric)
+def write_tables(results, names, metric, output_dir):
+    sigmas = _all_sigmas(results, names)
+    md = make_markdown(results, names, sigmas, metric)
+    tex = make_latex(results, names, sigmas, metric)
     with open(os.path.join(output_dir, 'results.md'), 'w') as f:
         f.write(f'# Denoising results ({metric} validation metric)\n\n')
         f.write(md)
@@ -220,19 +240,6 @@ def write_tables(results, models, sigmas, metric, output_dir):
 # --------------------------------------------------------------------------- #
 
 def main(args):
-    with open(args.config) as f:
-        base_config = json.load(f)
-
-    # Apply hyper-parameter overrides (width/depth/etc.) to the base config that
-    # every run in this sweep inherits.
-    apply_overrides(base_config, args)
-    if not args.tabulate_only:
-        np_ = base_config['net_params']
-        to_ = base_config['training_options']
-        print(f"Hyper-parameters for this sweep: depth={np_['depth']}, "
-              f"width={np_['nb_channels']}, kernel_size={np_['kernel_size']}, "
-              f"batch_size={to_['batch_size']}, epochs={to_['epochs']}")
-
     os.makedirs(args.output_dir, exist_ok=True)
     results_path = os.path.join(args.output_dir, 'results.json')
 
@@ -241,62 +248,57 @@ def main(args):
         with open(results_path) as f:
             results = json.load(f)
 
-    if not args.tabulate_only:
-        for model_name in args.models:
-            results.setdefault(model_name, {})
-            for sigma in args.sigmas:
-                if args.resume and str(sigma) in results[model_name]:
-                    print(f"[skip] {model_name} sigma={sigma} (already done)")
-                    continue
-                print(f"\n===== training {model_name} @ sigma={sigma} =====")
-                metrics = run_one(
-                    base_config, model_name, sigma, args.device,
-                    args.output_dir,
-                )
-                results[model_name][str(sigma)] = metrics
-                # Save incrementally so an interrupted sweep is recoverable.
-                with open(results_path, 'w') as f:
-                    json.dump(results, f, indent=2, sort_keys=True)
-                print(f"  -> best PSNR {metrics['best_psnr']:.2f} dB / "
-                      f"SSIM {metrics['best_ssim']:.4f} "
-                      f"(epoch {metrics['best_epoch']}, {metrics['minutes']} min)")
+    if args.tabulate_only:
+        names = list(results.keys())
+        write_tables(results, names, args.metric, args.output_dir)
+        return
 
-    write_tables(results, args.models, args.sigmas, args.metric, args.output_dir)
+    configs = load_configs(args.config_dir, only=args.configs)
+    if not configs:
+        raise SystemExit(f"No runnable configs found in '{args.config_dir}'.")
+
+    names = [name for name, _ in configs]
+    for name, config in configs:
+        sigmas = resolve_sigmas(config, args.sigmas)
+        entry = results.setdefault(name, {})
+        entry['label'] = config.get('label', name)
+        entry['model'] = config['net_params'].get('model')
+        entry.setdefault('runs', {})
+        for sigma in sigmas:
+            if args.resume and str(sigma) in entry['runs']:
+                print(f"[skip] {name} sigma={sigma} (already done)")
+                continue
+            print(f"\n===== training {name} ({entry['model']}) @ sigma={sigma} =====")
+            metrics = run_one(config, name, sigma, args.device,
+                              args.output_dir, epochs=args.epochs)
+            entry['runs'][str(sigma)] = metrics
+            # Save incrementally so an interrupted sweep is recoverable.
+            with open(results_path, 'w') as f:
+                json.dump(results, f, indent=2, sort_keys=True)
+            print(f"  -> best PSNR {metrics['best_psnr']:.2f} dB / "
+                  f"SSIM {metrics['best_ssim']:.4f} "
+                  f"(epoch {metrics['best_epoch']}, {metrics['minutes']} min)")
+
+    write_tables(results, names, args.metric, args.output_dir)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train + tabulate the denoising models')
     parser.add_argument('-d', '--device', default='cpu', type=str, help='device to use')
-    parser.add_argument('-c', '--config', default='config.json', type=str,
-                        help='base config json (data paths, hyper-params)')
+    parser.add_argument('--config-dir', default='experiment_configs', type=str,
+                        help='folder of per-model JSON configs to run')
     parser.add_argument('-o', '--output-dir', default='exps/paper', type=str,
                         help='where results and per-run checkpoints go')
-    parser.add_argument('--models', nargs='+', default=list(MODELS.keys()),
-                        choices=list(MODELS.keys()), help='models to train')
+    parser.add_argument('--configs', nargs='+', default=None, metavar='NAME',
+                        help='only run these config names (file stems); default: all')
     parser.add_argument('--sigmas', nargs='+', type=int, default=[5, 15, 25],
-                        help='noise levels to train/evaluate at')
+                        help="fallback noise levels for configs that don't set 'sigmas'")
     parser.add_argument('--epochs', type=int, default=None,
-                        help='override the number of epochs from the config')
-
-    # Hyper-parameter overrides applied to every run in the sweep.
-    hp = parser.add_argument_group('hyper-parameter overrides (applied to every run)')
-    hp.add_argument('--depth', type=int, default=None,
-                    help='network depth (net_params.depth)')
-    hp.add_argument('--width', type=int, default=None,
-                    help='number of channels / width (net_params.nb_channels)')
-    hp.add_argument('--kernel-size', type=int, default=None,
-                    help='convolution kernel size (net_params.kernel_size)')
-    hp.add_argument('--batch-size', type=int, default=None,
-                    help='training batch size (training_options.batch_size)')
-    hp.add_argument('--set', nargs='+', metavar='KEY=VALUE', default=None,
-                    help='generic dotted-key overrides for any config field, e.g. '
-                         "--set optimizer.lr_weights=1e-4 net_params.beta=0.7 "
-                         'activation_params.spline_size=101 net_params.bias=true')
-
+                        help='override the number of epochs for every config')
     parser.add_argument('--metric', choices=['best', 'final'], default='best',
                         help="report each run's best or final validation metric")
     parser.add_argument('--resume', action='store_true',
-                        help='skip (model, sigma) pairs already present in results.json')
+                        help='skip (config, sigma) pairs already present in results.json')
     parser.add_argument('--tabulate-only', action='store_true',
                         help='rebuild the tables from results.json without training')
     args = parser.parse_args()

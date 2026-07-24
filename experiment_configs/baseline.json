@@ -1,0 +1,30 @@
+{
+    "label": "Baseline (BCOP)",
+    "sigmas": [5, 15, 25],
+    "net_params": {
+        "model": "baseline",
+        "depth": 16,
+        "nb_channels": 64,
+        "kernel_size": 3,
+        "bias": false
+    },
+    "activation_params": {
+        "lmbda": 1e-06,
+        "spline_range": 0.1,
+        "spline_size": 51,
+        "entro": 1e-1
+    },
+    "optimizer": {
+        "lr_weights": 1e-05,
+        "lr_spline_coeffs": 1e-06,
+        "lr_spline_scaling_coeffs": 1e-05,
+        "lr_directions": 1e-03
+    },
+    "training_options": {
+        "batch_size": 128,
+        "epochs": 10,
+        "num_workers": 1,
+        "train_data_file": "/home/borna/Documents/BSD500/train.h5",
+        "val_data_file": "/home/borna/Documents/BSD500/test.h5"
+    }
+}
