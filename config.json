@@ -5,7 +5,7 @@
         "spline_size": 51,
         "entro": 1e-1
     },
-    "exp_name": "symmirrorbcop_depth_16_width_64_kernel_3_2",
+    "exp_name": "symmirrorbcop_depth_16_width_64_kernel_3",
     "log_dir": "exps/sigma_25",
     "net_params": {
         "bias": false,
