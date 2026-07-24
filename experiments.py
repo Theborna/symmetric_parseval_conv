@@ -51,13 +51,54 @@ def set_seed(seed=0):
     torch.backends.cudnn.benchmark = False
 
 
-def run_one(base_config, model_name, sigma, device, output_dir, epochs=None):
+def _coerce(value):
+    """Turn a CLI string into an int/float/bool/None/str via JSON, else keep str."""
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        return value
+
+
+def _set_dotted(config, dotted_key, value):
+    """Set config['a']['b'] = value from a dotted key 'a.b' (creating dicts)."""
+    keys = dotted_key.split('.')
+    node = config
+    for k in keys[:-1]:
+        node = node.setdefault(k, {})
+    node[keys[-1]] = value
+
+
+def apply_overrides(config, args):
+    """Apply hyper-parameter overrides (friendly flags + generic --set) in place.
+
+    Friendly flags win over the base config; --set entries win over everything,
+    so you can always reach a config key that has no dedicated flag.
+    """
+    friendly = {
+        'net_params.depth': args.depth,
+        'net_params.nb_channels': args.width,
+        'net_params.kernel_size': args.kernel_size,
+        'training_options.batch_size': args.batch_size,
+        'training_options.epochs': args.epochs,
+    }
+    for dotted, val in friendly.items():
+        if val is not None:
+            _set_dotted(config, dotted, val)
+
+    for item in (args.set or []):
+        if '=' not in item:
+            raise ValueError(f"--set expects key=value, got '{item}'")
+        key, val = item.split('=', 1)
+        _set_dotted(config, key.strip(), _coerce(val))
+
+    return config
+
+
+def run_one(base_config, model_name, sigma, device, output_dir):
     """Train a single (model, sigma) and return its metrics dict."""
     config = copy.deepcopy(base_config)
     config['net_params']['model'] = model_name
     config['sigma'] = sigma
-    if epochs is not None:
-        config['training_options']['epochs'] = epochs
 
     # Give each run its own experiment folder so checkpoints/logs never collide.
     config['exp_name'] = f"{model_name}_sigma_{sigma}"
@@ -68,7 +109,12 @@ def run_one(base_config, model_name, sigma, device, output_dir, epochs=None):
     trainer = Trainer(config, device)
     metrics = trainer.train()
     metrics['minutes'] = round((time.time() - start) / 60.0, 2)
+    # Provenance: record the hyper-parameters this cell was trained with.
     metrics['epochs'] = config['training_options']['epochs']
+    metrics['depth'] = config['net_params']['depth']
+    metrics['width'] = config['net_params']['nb_channels']
+    metrics['kernel_size'] = config['net_params']['kernel_size']
+    metrics['batch_size'] = config['training_options']['batch_size']
     return metrics
 
 
@@ -177,6 +223,16 @@ def main(args):
     with open(args.config) as f:
         base_config = json.load(f)
 
+    # Apply hyper-parameter overrides (width/depth/etc.) to the base config that
+    # every run in this sweep inherits.
+    apply_overrides(base_config, args)
+    if not args.tabulate_only:
+        np_ = base_config['net_params']
+        to_ = base_config['training_options']
+        print(f"Hyper-parameters for this sweep: depth={np_['depth']}, "
+              f"width={np_['nb_channels']}, kernel_size={np_['kernel_size']}, "
+              f"batch_size={to_['batch_size']}, epochs={to_['epochs']}")
+
     os.makedirs(args.output_dir, exist_ok=True)
     results_path = os.path.join(args.output_dir, 'results.json')
 
@@ -195,7 +251,7 @@ def main(args):
                 print(f"\n===== training {model_name} @ sigma={sigma} =====")
                 metrics = run_one(
                     base_config, model_name, sigma, args.device,
-                    args.output_dir, epochs=args.epochs,
+                    args.output_dir,
                 )
                 results[model_name][str(sigma)] = metrics
                 # Save incrementally so an interrupted sweep is recoverable.
@@ -221,6 +277,22 @@ if __name__ == '__main__':
                         help='noise levels to train/evaluate at')
     parser.add_argument('--epochs', type=int, default=None,
                         help='override the number of epochs from the config')
+
+    # Hyper-parameter overrides applied to every run in the sweep.
+    hp = parser.add_argument_group('hyper-parameter overrides (applied to every run)')
+    hp.add_argument('--depth', type=int, default=None,
+                    help='network depth (net_params.depth)')
+    hp.add_argument('--width', type=int, default=None,
+                    help='number of channels / width (net_params.nb_channels)')
+    hp.add_argument('--kernel-size', type=int, default=None,
+                    help='convolution kernel size (net_params.kernel_size)')
+    hp.add_argument('--batch-size', type=int, default=None,
+                    help='training batch size (training_options.batch_size)')
+    hp.add_argument('--set', nargs='+', metavar='KEY=VALUE', default=None,
+                    help='generic dotted-key overrides for any config field, e.g. '
+                         "--set optimizer.lr_weights=1e-4 net_params.beta=0.7 "
+                         'activation_params.spline_size=101 net_params.bias=true')
+
     parser.add_argument('--metric', choices=['best', 'final'], default='best',
                         help="report each run's best or final validation metric")
     parser.add_argument('--resume', action='store_true',
