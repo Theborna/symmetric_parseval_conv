@@ -35,32 +35,14 @@ class Trainer:
         print('Building the model')
         
         # Build the model
+        # The four core models form a 2x2 ablation over "symmetric filters" and
+        # the "mirror" (nested) architecture. See parseval_cnn.py. Older
+        # experimental variants live in parseval_cnn_experiments.py.
 
-        # self.model = ParsevalCNN(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN2(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN3(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN4(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN5(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN6(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN7(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN8(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN9(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN10(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN11(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN12(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN13(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN14(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN15(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN16(config['net_params'], config['activation_params']) 
-        # self.model = ParsevalCNN17(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN18(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN19(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN20(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN21(config['net_params'], config['activation_params'])
-        self.model = ParsevalCNN22(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN23(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN24(config['net_params'], config['activation_params'])
-        # self.model = ParsevalCNN25(config['net_params'], config['activation_params'])
+        # self.model = BaselineParsevalCNN(config['net_params'], config['activation_params'])
+        # self.model = SymmetricParsevalCNN(config['net_params'], config['activation_params'])
+        # self.model = MirrorParsevalCNN(config['net_params'], config['activation_params'])
+        self.model = SymmetricMirrorParsevalCNN(config['net_params'], config['activation_params'])
 
         # self.model = AveragedDenoiser(self.model, config['net_params']['beta'])
     
