@@ -220,3 +220,21 @@ class SymmetricMirrorParsevalCNN(nn.Module):
     def forward(self, x):
         """Forward pass through the network"""
         return self.network(x)
+
+
+# Registry mapping a short config name -> model class, plus a human-readable
+# label for tables/plots. Used by trainer.py (config['net_params']['model'])
+# and by experiments.py.
+MODELS = {
+    'baseline': BaselineParsevalCNN,
+    'symmetric': SymmetricParsevalCNN,
+    'mirror': MirrorParsevalCNN,
+    'symmetric_mirror': SymmetricMirrorParsevalCNN,
+}
+
+MODEL_LABELS = {
+    'baseline': 'Baseline (BCOP)',
+    'symmetric': 'Symmetric',
+    'mirror': 'Mirror',
+    'symmetric_mirror': 'Symmetric Mirror',
+}

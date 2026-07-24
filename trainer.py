@@ -38,11 +38,16 @@ class Trainer:
         # The four core models form a 2x2 ablation over "symmetric filters" and
         # the "mirror" (nested) architecture. See parseval_cnn.py. Older
         # experimental variants live in parseval_cnn_experiments.py.
-
-        # self.model = BaselineParsevalCNN(config['net_params'], config['activation_params'])
-        # self.model = SymmetricParsevalCNN(config['net_params'], config['activation_params'])
-        # self.model = MirrorParsevalCNN(config['net_params'], config['activation_params'])
-        self.model = SymmetricMirrorParsevalCNN(config['net_params'], config['activation_params'])
+        #
+        # Which one is built is selected by config['net_params']['model'], one of
+        # MODELS.keys() (baseline / symmetric / mirror / symmetric_mirror).
+        # Defaults to 'symmetric_mirror' to preserve the previous behaviour.
+        model_name = config['net_params'].get('model', 'symmetric_mirror')
+        if model_name not in MODELS:
+            raise ValueError(
+                f"Unknown model '{model_name}'. Choose from {list(MODELS)}."
+            )
+        self.model = MODELS[model_name](config['net_params'], config['activation_params'])
 
         # self.model = AveragedDenoiser(self.model, config['net_params']['beta'])
     
@@ -89,15 +94,33 @@ class Trainer:
         self.optimizer = torch.optim.Adam(params_list)
 
     def train(self):
-        
-        best_psnr = 0
+
+        self.best_psnr = 0.0
+        self.best_ssim = 0.0
+        self.best_epoch = -1
+        self.final_psnr = 0.0
+        self.final_ssim = 0.0
         for epoch in range(self.epochs+1):
             self.train_epoch(epoch)
-            self.valid_epoch(epoch)
+            loss_val, psnr_val, ssim_val = self.valid_epoch(epoch)
+            self.final_psnr, self.final_ssim = psnr_val, ssim_val
             self.save_checkpoint()
-        
+            if psnr_val > self.best_psnr:
+                self.best_psnr = psnr_val
+                self.best_ssim = ssim_val
+                self.best_epoch = epoch
+                self.save_checkpoint(tag='best')
+
         self.writer.flush()
         self.writer.close()
+
+        return {
+            'best_psnr': self.best_psnr,
+            'best_ssim': self.best_ssim,
+            'best_epoch': self.best_epoch,
+            'final_psnr': self.final_psnr,
+            'final_ssim': self.final_ssim,
+        }
         
 
     def train_epoch(self, epoch):
@@ -179,18 +202,19 @@ class Trainer:
             self.writer.add_scalar(f'{self.wrt_mode}/Test PSNR Mean', psnr_val, epoch)
             self.writer.add_scalar(f'{self.wrt_mode}/Test SSIM Mean', ssim_val, epoch)
 
+        return loss_val, psnr_val, ssim_val
+
 
     def write_scalars_tb(self, logs):
         for k, v in logs.items():
             self.writer.add_scalar(f'train/{k}', v, self.wrt_step)
 
-    def save_checkpoint(self):
+    def save_checkpoint(self, tag='checkpoint'):
         state = {
             'state_dict': self.model.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'config': self.config
         }
 
-        print('Saving a checkpoint:')
-        filename = self.checkpoint_dir + '/checkpoint.pth'
+        filename = os.path.join(self.checkpoint_dir, f'{tag}.pth')
         torch.save(state, filename)
