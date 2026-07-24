@@ -20,6 +20,15 @@ The four kept models form a clean 2x2 ablation over those two ideas:
     SymmetricParsevalCNN              yes        no      CNN13    SymBCOP
     MirrorParsevalCNN                 no        yes      CNN20    MirrorBCOP
     SymmetricMirrorParsevalCNN        yes        yes     CNN22    SymMirrorBCOP
+
+Input/output embedding
+----------------------
+The unitary-based models all share the *same* fixed input/output embedding
+(``_fixed_channel_lift``): a non-trainable one-hot lift from the single input
+channel into ``nb_channels``, with its transpose projecting back. Theoretically
+the choice of this orthogonal embedding is irrelevant (the network absorbs it),
+so fixing it identically across models keeps the ablation to a single variable:
+the core convolution block.
 """
 
 import torch
@@ -30,6 +39,24 @@ from layers.BCOP.bcop import BCOP
 from layers.BCOP.symbcop import SymBCOP
 from layers.BCOP.mirror_bcop import MirrorBCOP, SymMirrorBCOP
 from layers.UnitaryMatrices.unitary import UnitaryMatrix, UnitaryTransposed
+
+
+def _fixed_channel_lift(nb_channels):
+    """Shared input/output orthogonal embedding.
+
+    Returns ``(unitary, unitary_transposed)`` where ``unitary`` is a fixed
+    (non-trainable) one-hot lift from the single input channel into
+    ``nb_channels`` (channel 0), and ``unitary_transposed`` projects back to one
+    channel. The same fixed embedding is used by every unitary-based model so
+    the only thing that varies across the ablation is the convolution block.
+    """
+    unitary = UnitaryMatrix(1, out_channels=nb_channels)
+    unitary.orthogonal_matrices[0] = nn.Parameter(
+        torch.zeros(nb_channels, 1), requires_grad=False
+    )
+    unitary.orthogonal_matrices[0].data[0, 0] = 1
+    unitary_transposed = UnitaryTransposed(unitary)
+    return unitary, unitary_transposed
 
 
 class NestedSequential(nn.Sequential):
@@ -59,14 +86,16 @@ class BaselineParsevalCNN(nn.Module):
         spline_size = activation_params['spline_size']
         spline_range = activation_params['spline_range']
 
-        self.network.append(BCOP(1, nb_channels, kernel_size, bias=bias))
+        unitary, unitary_transposed = _fixed_channel_lift(nb_channels)
+
+        self.network.append(unitary)
         self.network.append(LinearSpline(nb_channels, spline_size, -spline_range, spline_range, 'identity', slope_min=-1, slope_max=1))
 
-        for i in range(depth-2):
-            self.network.append(BCOP(nb_channels, nb_channels, kernel_size, bias=network_parameters['bias']))
+        for _ in range(depth):
+            self.network.append(BCOP(nb_channels, nb_channels, kernel_size, bias=bias))
             self.network.append(LinearSpline(nb_channels, spline_size, -spline_range, spline_range, 'identity', slope_min=-1, slope_max=1))
 
-        self.network.append(BCOP(nb_channels, 1, kernel_size, bias=bias))
+        self.network.append(unitary_transposed)
         self.network = nn.Sequential(*self.network)
 
 
@@ -92,14 +121,16 @@ class SymmetricParsevalCNN(nn.Module):
         spline_size = activation_params['spline_size']
         spline_range = activation_params['spline_range']
 
-        self.network.append(UnitaryMatrix(1, out_channels=nb_channels))
+        unitary, unitary_transposed = _fixed_channel_lift(nb_channels)
+
+        self.network.append(unitary)
         self.network.append(LinearSpline(nb_channels, spline_size, -spline_range, spline_range, 'identity', slope_min=-1, slope_max=1))
 
         for _ in range(depth):
             self.network.append(SymBCOP(nb_channels, nb_channels, kernel_size, bias=network_parameters['bias']))
             self.network.append(LinearSpline(nb_channels, spline_size, -spline_range, spline_range, 'identity', slope_min=-1, slope_max=1))
 
-        self.network.append(UnitaryMatrix(nb_channels, out_channels=1))
+        self.network.append(unitary_transposed)
         self.network = nn.Sequential(*self.network)
 
 
@@ -123,8 +154,7 @@ class MirrorParsevalCNN(nn.Module):
         spline_size = activation_params['spline_size']
         spline_range = activation_params['spline_range']
 
-        unitary = UnitaryMatrix(1, out_channels=nb_channels)
-        unitary_transposed = UnitaryTransposed(unitary)
+        unitary, unitary_transposed = _fixed_channel_lift(nb_channels)
         layers = self._create_nested_structure(depth, nb_channels, kernel_size, bias, spline_size, spline_range)
 
         self.network = NestedSequential(
@@ -165,12 +195,7 @@ class SymmetricMirrorParsevalCNN(nn.Module):
         spline_size = activation_params['spline_size']
         spline_range = activation_params['spline_range']
 
-        unitary = UnitaryMatrix(1, out_channels=nb_channels)
-        unitary.orthogonal_matrices[0] = nn.Parameter(
-            torch.zeros(nb_channels, 1), requires_grad=False
-        )
-        unitary.orthogonal_matrices[0].data[0, 0] = 1
-        unitary_transposed = UnitaryTransposed(unitary)
+        unitary, unitary_transposed = _fixed_channel_lift(nb_channels)
         layers = self._create_nested_structure(depth, nb_channels, kernel_size, bias, spline_size, spline_range)
 
         self.network = NestedSequential(
