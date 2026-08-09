@@ -129,7 +129,8 @@ class SymSVD(StreamlinedModule, LipschitzModuleL2):
         
         Note: The last matrix is constructed differently with a block diagonal structured diag([U0, U1])
         """
-        U = torch.Tensor(self.num_kernels, self.max_channels, self.max_channels).to("cuda")
+        U = torch.empty(self.num_kernels, self.max_channels, self.max_channels,
+                        device=U0.device, dtype=U0.dtype)
         for k in range(self.num_kernels):
             u0, u1 = U0[k, :, :], U1[k, :, :]
             x, y = torch.cat((u0+u1, u0-u1, u0-u1, u0+u1), dim=1).t().chunk(2)
