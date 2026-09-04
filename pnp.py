@@ -547,26 +547,10 @@ def solve(op, y, model, solver='pgd', beta=0.5, x_true=None, n_iter=100, **kw):
 # Denoisers: loading the trained Parseval nets, and an unconstrained control
 # --------------------------------------------------------------------------- #
 
-class DnCNN(nn.Module):
-    """Small unconstrained residual denoiser (DnCNN-style).
-
-    This is the *control* for the central claim. It has no Lipschitz constraint,
-    so its Jacobian norm is free to exceed 1 and PnP is not guaranteed to
-    converge -- which is precisely what the experiments demonstrate.
-    """
-
-    def __init__(self, depth=7, channels=64, kernel_size=3):
-        super().__init__()
-        pad = kernel_size // 2
-        layers = [nn.Conv2d(1, channels, kernel_size, padding=pad), nn.ReLU(inplace=True)]
-        for _ in range(depth - 2):
-            layers += [nn.Conv2d(channels, channels, kernel_size, padding=pad, bias=False),
-                       nn.BatchNorm2d(channels), nn.ReLU(inplace=True)]
-        layers += [nn.Conv2d(channels, 1, kernel_size, padding=pad)]
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return x - self.net(x)  # residual (noise-predicting) parameterisation
+# DnCNN now lives in layers/dncnn.py (it is also used, unrelated to PnP, as an
+# accuracy baseline registered in parseval_cnn.MODELS). Re-exported here so
+# `pnp.DnCNN` keeps working exactly as before -- same class, same defaults.
+from layers.dncnn import DnCNN  # noqa: E402
 
 
 def load_parseval(name, ckpt_path, device='cpu', config=None):

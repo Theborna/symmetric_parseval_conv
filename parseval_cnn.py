@@ -12,7 +12,7 @@ Two independent ideas are combined here:
       network reuses the mirrored (flipped) filters of the first half
       (MirrorBCOP / SymMirrorBCOP).
 
-The four kept models form a clean 2x2 ablation over those two ideas:
+The four kept Parseval models form a clean 2x2 ablation over those two ideas:
 
     class name                    symmetric?  mirror?   was      conv block
     --------------------------    ----------  -------   ------   -------------
@@ -20,6 +20,12 @@ The four kept models form a clean 2x2 ablation over those two ideas:
     SymmetricParsevalCNN              yes        no      CNN13    SymBCOP
     MirrorParsevalCNN                 no        yes      CNN20    MirrorBCOP
     SymmetricMirrorParsevalCNN        yes        yes     CNN22    SymMirrorBCOP
+
+A fifth model, ``DnCNNBaseline``, sits outside that ablation: it wraps the plain
+(unconstrained) ``DnCNN`` from ``layers/dncnn.py`` at a comparable depth/width,
+registered as ``MODELS['dncnn']`` so it can be trained and reported alongside
+the four Parseval models with the same pipeline (see
+``experiment_configs/dncnn.json`` and ``colab_dncnn_baseline.ipynb``).
 
 Input/output embedding
 ----------------------
@@ -39,6 +45,7 @@ from layers.BCOP.bcop import BCOP
 from layers.BCOP.symbcop import SymBCOP
 from layers.BCOP.mirror_bcop import MirrorBCOP, SymMirrorBCOP
 from layers.UnitaryMatrices.unitary import UnitaryMatrix, UnitaryTransposed
+from layers.dncnn import DnCNN
 
 
 def _fixed_channel_lift(nb_channels):
@@ -222,6 +229,36 @@ class SymmetricMirrorParsevalCNN(nn.Module):
         return self.network(x)
 
 
+class DnCNNBaseline(nn.Module):
+    """Unconstrained DnCNN, registered as a plain accuracy baseline.
+
+    Unlike every model above, this network has no architectural constraint on
+    its Jacobian -- it is not 1-Lipschitz by construction (see
+    ``layers/dncnn.py``, and ``pnp.py`` / ``colab_pnp.ipynb`` where the same
+    architecture is used as the control that shows PnP has no convergence
+    guarantee without such a constraint). Here it answers a different
+    question: how much denoising accuracy is left on the table by enforcing
+    1-Lipschitzness, at a comparable depth and width.
+
+    ``depth`` here counts convolution layers directly (matching
+    ``BaselineParsevalCNN``/``SymmetricParsevalCNN``'s conv-layer count), so use
+    the same ``depth``/``nb_channels`` to keep the comparison apples-to-apples.
+    ``activation_params`` and ``bias`` are accepted for interface compatibility
+    with the other models but unused: DnCNN has no spline activations, and its
+    conv/BN blocks use the standard DnCNN bias convention.
+    """
+    def __init__(self, network_parameters, activation_params):
+        super().__init__()
+        self.net = DnCNN(
+            depth=network_parameters['depth'],
+            channels=network_parameters['nb_channels'],
+            kernel_size=network_parameters['kernel_size'],
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 # Registry mapping a short config name -> model class, plus a human-readable
 # label for tables/plots. Used by trainer.py (config['net_params']['model'])
 # and by experiments.py.
@@ -230,6 +267,7 @@ MODELS = {
     'symmetric': SymmetricParsevalCNN,
     'mirror': MirrorParsevalCNN,
     'symmetric_mirror': SymmetricMirrorParsevalCNN,
+    'dncnn': DnCNNBaseline,
 }
 
 MODEL_LABELS = {
@@ -237,4 +275,5 @@ MODEL_LABELS = {
     'symmetric': 'Symmetric',
     'mirror': 'Mirror',
     'symmetric_mirror': 'Symmetric Mirror',
+    'dncnn': 'DnCNN (unconstrained)',
 }

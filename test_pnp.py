@@ -163,7 +163,12 @@ def test_parseval_models_are_nonexpansive():
     torch.manual_seed(0)
     act = {'spline_size': 21, 'spline_range': 0.1, 'lmbda': 1e-6, 'entro': 0.1}
     x = torch.rand(1, 1, 32, 32)
+    # 'dncnn' is deliberately excluded: it is registered in MODELS as an
+    # unconstrained accuracy baseline (see parseval_cnn.DnCNNBaseline), not as
+    # part of the 1-Lipschitz family this check verifies.
     for key in MODELS:
+        if key == 'dncnn':
+            continue
         depth = 2 if 'mirror' in key else 4
         net = MODELS[key]({'depth': depth, 'nb_channels': 16, 'kernel_size': 3,
                            'bias': False, 'model': key}, act).eval()
